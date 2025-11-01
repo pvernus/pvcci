@@ -1,0 +1,352 @@
+---
+title: "Join PVCCI to GADM 4.10"
+format: html
+editor: visual
+---
+
+```{r}
+#pckg
+library(sf)
+library(readr)
+library(janitor)
+library(stringi)
+library(tidyverse)
+library(countrycode)
+library(fuzzyjoin)   # stringdist
+
+```
+
+# GADM 4.10
+
+## Import ADM0/1/2
+
+```{r}
+
+## load gadm source data
+# adm0
+adm0_gadm <- read_sf('C:/Users/pauvernu/Seafile/library/chap_two_data/gadm/gadm_410-levels/gadm_410-levels.gpkg', layer ='ADM_0') |> 
+  clean_names() |> 
+  mutate(gid_0 = ifelse(gid_0 == 'XKO', 'XKX', gid_0)) |> 
+  # filter(!gid_0 == 'ALA') |> # remove åland, as part of finland
+  rename(iso3 = gid_0)
+
+# adm1
+adm1_gadm <- read_sf('C:/Users/pauvernu/Seafile/library/chap_two_data/gadm/gadm_410-levels/gadm_410-levels.gpkg', layer ='ADM_1') |> 
+  clean_names() |> 
+  mutate(gid_0 = ifelse(gid_0 == 'XKO', 'XKX', gid_0)) |> 
+  # filter(!gid_0 == 'ALA') |> # remove åland, as part of finland
+  rename(iso3 = gid_0)
+
+#adm2
+adm2_gadm <- read_sf('C:/Users/pauvernu/Seafile/library/chap_two_data/gadm/gadm_410-levels/gadm_410-levels.gpkg', layer ='ADM_2') |> 
+  clean_names() |> 
+  mutate(gid_0 = ifelse(gid_0 == 'XKO', 'XKX', gid_0)) |> 
+  # filter(!gid_0 == 'ALA') |> # remove åland, as part of finland
+  rename(iso3 = gid_0)
+
+# missing adm data
+# adm1_gadm |> filter(!iso3 %in% unique(adm2_gadm$iso3))
+# adm0_gadm |> filter(!iso3 %in% c(unique(adm2_gadm$iso3), unique(adm1_gadm$iso3)))
+```
+
+## Clean ADM2
+
+```{r}
+
+# adm2_gadm_clean <- st_read('C:/Users/pauvernu/Seafile/library/chap_two_data/gadm/gadm_410-gpkg/adm2_gadm_clean.gpkg')
+
+adm2_gadm_clean <- adm2_gadm |>
+  # if not adm2 data, use adm1 data
+  bind_rows(adm1_gadm |> filter(!iso3 %in% unique(adm2_gadm$iso3))) |>
+  # finally, if not in either adm2 or adm1, use adm0
+  bind_rows(adm0_gadm |> filter(!iso3 %in% c(unique(adm2_gadm$iso3), unique(adm1_gadm$iso3)))) |>
+  mutate(across(c(name_1, name_2), na_if, "?")) |> 
+  mutate(name_adm2 = ifelse(is.na(name_2) & is.na(name_1), country,
+                         ifelse(is.na(name_2), name_1, name_2) )) |>
+  mutate(gid_adm2 = ifelse(is.na(gid_2) & is.na(gid_1), iso3,
+                        ifelse(is.na(gid_2), gid_1, gid_2))) |>
+  select(country, iso3, 
+         gid_adm1 = gid_1, name_adm1 = name_1, 
+         gid_adm2, name_adm2, hasc_2) |> 
+  # some of the adm1 levels are divided to those that are officially in a country and those that are
+  # on conflict zones (between CHN, IND and PAK)
+  # let's rename them with those that we have data for
+  mutate(iso3 = ifelse(
+    iso3 %in% c('Z02', 'Z03', 'Z08'),'CHN',
+    ifelse(iso3 %in% c('Z06'), 'PAK',
+           ifelse(iso3 %in% c('Z01', 'Z04','Z05','Z07','Z09'), 'IND',
+                                     iso3))))
+
+# NOTE: Macao and Hong Kong are misssing in GADM .gpkg file, not sure why
+
+st_write(adm2_gadm_clean, 
+         'C:/Users/pauvernu/Seafile/library/chap_two_data/gadm/adm2_gadm_clean.gpkg', delete_dsn=T)
+```
+
+# GADM 3.6
+
+```{r}
+
+adm2_gadm_v3.6 <- st_read("C:/Users/pauvernu/Seafile/library/chap_two_data/gadm/gadm_adm2p/gadm_adm2p.shp") |>
+  clean_names() |> 
+  select(iso3 = iso, name_0, name_1, name_2, hasc_2, idcomp, surface)
+
+# Download from https://gadm.org/data.html failed
+# usethis::use_zip(
+# url = "https://biogeo.ucdavis.edu/data/gadm3.6/gadm36_gpkg.zip",
+# destdir = "C:/Users/pauvernu/Seafile/library/chap_two_data/gadm_adm2p"
+# )
+```
+
+## Merge GADM 3.6 and 4.1
+
+```{r}
+
+g36 <- adm2_gadm_v3.6
+g410 <- adm2_gadm_clean
+
+# quick checks
+nrow(g36); nrow(g410)
+st_crs(g36); st_crs(g410)
+
+# ensure same CRS
+g36 <- st_transform(g36, 4326)
+g410 <- st_transform(g410, 4326)
+
+# saveRDS(g36, g410,
+#      "C:/Users/pauvernu/Seafile/library/chap_two_data/gadm/gadm_36_410.RDS")
+# readRDS("C:/Users/pauvernu/Seafile/library/chap_two_data/gadm/gadm_36_410.RDS")
+
+# make adm names comparable
+clean_string <- function(x){
+  x <- ifelse(is.na(x),"", as.character(x))
+  x <- str_to_lower(x)
+  x <- stringi::stri_trans_general(x, "Latin-ASCII")     # remove accents
+  x <- str_replace_all(x, "[^a-z0-9 ]+", " ")
+  x <- str_squish(x)
+  x[x==""] <- NA
+  x
+}
+
+g36 <- g36 |>
+  mutate(
+    adm0 = name_0,
+    adm1 = name_1,
+    adm2 = name_2,
+    adm0_n = clean_string(adm0),
+    adm1_n = clean_string(adm1),
+    adm2_n = clean_string(adm2),
+    hasc  = as.character(hasc_2)
+  )
+
+g410 <- g410 |>
+  mutate(
+    adm0 = country,
+    adm1 = name_adm1,
+    adm2 = name_adm2,
+    adm0_n = clean_string(adm0),
+    adm1_n = clean_string(adm1),
+    adm2_n = clean_string(adm2),
+    hasc  = as.character(hasc_2)
+  )
+
+# replace missing values hasc_2 by NA
+g36 <- g36 |> 
+  mutate(hasc = case_when(
+    hasc=="NA" ~ NA,
+    hasc=="#N/A" ~ NA,
+    hasc=="unknown" ~ NA,
+    hasc=="<Null>" ~ NA,
+    .default = hasc))
+
+g410 <- g410 |> 
+  mutate(hasc = case_when(
+    hasc=="NA" ~ NA,
+    hasc=="#N/A" ~ NA,
+    hasc=="unknown" ~ NA,
+    hasc=="?" ~ NA,
+    .default = hasc))
+
+# create ID based on row numbers
+g36 <- mutate(g36, g36_id = row_number())
+g410 <- mutate(g410, g410_id = row_number())
+
+# identify duplicates in each set
+dup36 <- g36 |> st_set_geometry(NULL) |> count(hasc) |> filter(!is.na(hasc) & n>1)
+dup4  <- g410 |> st_set_geometry(NULL) |> count(hasc) |> filter(!is.na(hasc) & n>1)
+
+# unique-by-hasc subsets
+g36_hasc_unique <- g36 |> 
+  filter(!is.na(hasc) & !hasc %in% dup36$hasc)
+g410_hasc_unique <- g410 |> 
+  filter(!is.na(hasc) & !hasc %in% dup4$hasc)
+
+exact_hasc_matches <- inner_join(
+  g36_hasc_unique |> 
+    st_set_geometry(NULL),
+  g410_hasc_unique |> 
+    st_set_geometry(NULL),
+  by = "hasc"
+) |> 
+  transmute(
+    g36_id, g410_id,
+    hasc,
+    match_type = "exact_hasc")
+
+# exact name matches on cleaned strings
+exact_name_matches <- inner_join(
+  g36 |> 
+    st_set_geometry(NULL) |> 
+    filter(!hasc %in% g36_hasc_unique$hasc),
+  g410 |> 
+    st_set_geometry(NULL) |> 
+    filter(!hasc %in% g410_hasc_unique$hasc),
+  by = c("adm0_n", "adm1_n", "adm2_n"),
+  relationship = "many-to-many"
+) |>
+  transmute(
+    g36_id, g410_id,
+    gid_adm2,
+    adm0_n, adm1_n, adm2_n,
+    match_type = "exact_name"
+  )
+
+exact_matches <- bind_rows(
+  exact_hasc_matches,
+  exact_name_matches
+) |> 
+  arrange(match_type)  # exact_hasc first
+
+# rows in g36 not yet matched
+unmatched_g36 <- g36 |> 
+  filter(!g36_id %in% exact_matches$g36_id)
+
+# rows in g410 not yet matched
+unmatched_g410 <- g410 |> 
+  filter(!g410_id %in% exact_matches$g410_id)
+
+# define thresholds
+thresholds <- c(0.1, 0.15, 0.2)
+
+fuzzy_matches_list <- lapply(thresholds, function(thresh){
+  stringdist_inner_join(
+    unmatched_g36 |> select(g36_id, iso3, adm1_n, adm2_n),
+    unmatched_g410 |> select(g410_id, iso3, adm1_n, adm2_n),
+    by = c("iso3", "adm1_n", "adm2_n"),
+    method = "jw",
+    max_dist = thresh,
+    distance_col = "dist"
+  ) |> 
+    transmute(
+      g36_id,
+      g410_id,
+      iso3.x, adm1_n.x, adm2_n.x,
+      iso3.y, adm1_n.y, adm2_n.y,
+      match_type = paste0("fuzzy_name_", thresh),
+      iso3.dist, adm1_n.dist, adm2_n.dist
+    )
+})
+
+fuzzy_matches <- bind_rows(fuzzy_matches_list)
+
+save(fuzzy_matches_list, fuzzy_matches,
+     file = "C:/Users/pauvernu/Seafile/library/chap_two_data/gadm/fuzzy_matches.RData")
+# load("C:/Users/pauvernu/Seafile/library/chap_two_data/gadm/fuzzy_matches.RData")
+
+fuzzy_matches <- fuzzy_matches |> 
+  group_by(g36_id, g410_id) |> 
+  arrange(match_type) |> 
+  slice_min(match_type, with_ties = FALSE) |> # 1 wins over 1.5 that wins over 2
+  ungroup()
+  
+fuzzy_matches <- fuzzy_matches |> 
+  mutate(n_matches_split = n(), .by = c(g36_id, match_type)) |> 
+  mutate(n_matches_merge = n(), .by = c(g410_id, match_type)) |> 
+  mutate(many_to_many = n_matches_merge > 1 | n_matches_split > 1)
+
+# fuzzy matches w/out duplicate, i.e. many_to_many==FALSE
+exact_fuzzy <- filter(fuzzy_matches, many_to_many==FALSE)
+
+# fuzzy matches w/ duplicates, i.e. many_to_many==TRUE
+fuzzy_unmatched <- filter(fuzzy_matches, 
+       !g36_id %in% exact_fuzzy$g36_id | !g410_id %in% exact_fuzzy$g410_id)
+
+fuzzy_unmatched <- fuzzy_unmatched |> 
+  group_by(g36_id) |> 
+  mutate(has_exact_adm2 = any(adm2_n.dist==0)) |> 
+  ungroup()
+
+# fuzzy matches w/ duplicates, but exact matching at adm2 level
+fuzzy_many_exact_adm2 <- filter(fuzzy_unmatched, has_exact_adm2) |> 
+  mutate(match_type = paste0(match_type, "_adm2"))
+
+fuzzy_unmatched <- filter(fuzzy_unmatched,
+       !g36_id %in% fuzzy_many_exact_adm2$g36_id | !g410_id %in% fuzzy_many_exact_adm2$g410_id)
+
+# split/merge admin units
+# one v3.6 name contained in several v4.10 names → split.
+# several v3.6 names contained in one v4.10 → aggregation.
+fuzzy_unmatched |> 
+  group_by(g36_id, match_type) |> 
+  mutate(split = ifelse(
+    length(g36_id, match_type)>1 & prod(n_matches_split) == 1, TRUE, FALSE)) |> 
+  View()
+
+
+
+
+fuzzy_unmatched <- fuzzy_unmatched |> 
+  mutate(split = ifelse(prod(n_matches_split) == 1, TRUE, FALSE), 
+         .by = g410_id) |> 
+  mutate(merge = ifelse(prod(n_matches_merge) == 1, TRUE, FALSE), 
+         .by = g36_id)
+
+fuzzy_many_split <- filter(fuzzy_unmatched, split) |> 
+  mutate(match_type = paste0(match_type, "_split"))  
+fuzzy_many_merge <- filter(fuzzy_unmatched, merge) |> 
+  mutate(match_type = paste0(match_type, "_merge"))
+
+filter(fuzzy_unmatched, !split & !merge) |> 
+  View()
+
+
+
+# group_by(gXX_id)
+# arrange(match_type, dist)
+# slice_min(match_type, dist) # check if keep multiple or single observation (we want to keep multiple observations)
+
+# stack all matches
+all_matches_combined <- bind_rows(
+  exact_matches,
+  exact_fuzzy
+) |> 
+  arrange(match_type) # exact_hasc > exact_name > fuzzy
+
+# spatial matching, with % threshold (ex: 95%)?
+
+```
+
+# PVCCI
+
+```{r}
+
+# read data
+pvcci_subnational <- readxl::read_excel("C:/Users/pauvernu/Seafile/library/chap_two_data/20251008_pvcci_os.xlsx") |> 
+  clean_names() |> 
+  mutate(across(c(name_0, name_1, name_2), \(x) na_if(x, "0"))) |> 
+  mutate(iso = case_when( # iso w/ different iso code in gadm
+    iso == "XKO" ~ "XKX",
+    iso == "XNC" ~ "ZNC",
+    .default = iso
+  )) |>   
+  filter(!iso %in% c("SP-", "PIS")) |> # iso w/ no value (probably typos)
+  rename(iso3 = iso, name_adm0 = name_0, name_adm1 = name_1, name_adm2 = name_2) |> 
+  as_tibble()
+
+# create new variables (agg w/ quadratic mean)
+pvcci <- pvcci_subnational |> 
+  mutate(
+    fast_onset_pvcci = sqrt((flood_norm^2 + aridity_norm^2) / 2),
+    slow_onset_pvcci = sqrt((rainfall_norm^2 + temperature_norm^2 + storms_norm^2) / 3)
+  )
+```
