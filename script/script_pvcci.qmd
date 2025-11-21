@@ -7,13 +7,11 @@ editor: visual
 ```{r}
 #pckg
 library(sf)
-library(readr)
+library(tidyverse) # dplyr # readr # purrr
 library(janitor)
 library(stringi)
-library(tidyverse)
 library(countrycode)
 library(fuzzyjoin)   # stringdist
-
 ```
 
 # GADM 4.10
@@ -43,6 +41,13 @@ adm2_gadm_410 <- read_sf('C:/Users/pauvernu/Seafile/library/chap_two_data/gadm/g
   mutate(gid_0 = ifelse(gid_0 == 'XKO', 'XKX', gid_0)) |> 
   # filter(!gid_0 == 'ALA') |> # remove åland, as part of finland
   rename(iso3 = gid_0)
+
+#adm3
+# adm3_gadm_410 <- read_sf('C:/Users/pauvernu/Seafile/library/chap_two_data/gadm/gadm_410-levels/gadm_410-levels.gpkg', layer ='ADM_3') |> 
+#   clean_names() |> 
+#   mutate(gid_0 = ifelse(gid_0 == 'XKO', 'XKX', gid_0)) |> 
+#   # filter(!gid_0 == 'ALA') |> # remove åland, as part of finland
+#   rename(iso3 = gid_0)
 
 # missing adm data
 # adm1_gadm |> filter(!iso3 %in% unique(adm2_gadm$iso3))
@@ -151,6 +156,45 @@ g410 <- g410 |>
 
 ```{r}
 
+g36 <- g36 |> 
+  mutate(adm0 = case_when(
+    iso3 == "CIV" ~ "Cote d'Ivoire",
+    iso3 == "STP" ~ "Sao Tome and Principe",
+    iso3 == "ALA" ~ "Aland",
+    TRUE ~ name_0
+  )) |>
+  mutate(iso3c = countrycode(adm0, 
+                             origin = 'country.name', destination = 'iso3c',
+                             custom_match = c(
+                               "Kosovo" = "XKX",
+                               "Akrotiri and Dhekelia" = "XAD",
+                               "Micronesia" = "FSM"
+                               )))
+  # |> distinct(adm0, iso3, iso3c) |> 
+  # filter(is.na(iso3c))
+
+g410 <- g410 |> 
+  mutate(across(c(adm0, iso3), ~ na_if(.x, "NA"))) |> 
+  mutate(iso3c = countrycode(adm0, 
+                             origin = 'country.name', destination = 'iso3c',
+                             custom_match = c(
+                               "Micronesia" =	"FSM",
+                               "México" =	"MEX",
+                               "Kosovo"	= "XKX",
+                               "United States Minor Outlying Isl"	= "UMI",
+                               "Akrotiri and Dhekelia" = "XAD",
+                               "Saint-Martin"	= "MAF",
+                               "Caspian Sea"	= "XCA",
+                               "Clipperton Island"	= "XCL",
+                               "Paracel Islands"	= "XPI",
+                               "Spratly Islands"	= "XSP"
+                             )))
+  # |> distinct(adm0, iso3, iso3c) |> 
+  # filter(is.na(iso3c))
+```
+
+```{r}
+
 # replace missing values hasc_2 by NA
 g36 <- g36 |> 
   mutate(hasc = case_when(
@@ -169,11 +213,13 @@ g410 <- g410 |>
     .default = hasc))
 ```
 
+### HASC matching
+
 ```{r exact_hasc_matches}
 
 # identify duplicates in each set
 dup36 <- g36 |> count(hasc) |> filter(!is.na(hasc) & n>1)
-dup4  <- g410 |> count(hasc) |> filter(!is.na(hasc) & n>1)
+dup410  <- g410 |> count(hasc) |> filter(!is.na(hasc) & n>1)
 
 # Plot duplicates
 # plot(st_geometry(g36[g36$iso3=="AFG",]),
@@ -183,7 +229,7 @@ dup4  <- g410 |> count(hasc) |> filter(!is.na(hasc) & n>1)
 g36_hasc_unique <- g36 |> 
   filter(!is.na(hasc) & !hasc %in% dup36$hasc)
 g410_hasc_unique <- g410 |> 
-  filter(!is.na(hasc) & !hasc %in% dup4$hasc)
+  filter(!is.na(hasc) & !hasc %in% dup410$hasc)
 
 # match with gadm410
 exact_hasc_matches <- inner_join(
@@ -200,19 +246,26 @@ g36 <- filter(g36, !g36_id %in% exact_hasc_matches$g36_id)
 g410 <- filter(g410, !g410_id %in% exact_hasc_matches$g410_id)
 ```
 
-```{r exact_name_matches}
+### Full name matching
+
+```{r full_name_matches}
 
 # exact name matches on cleaned strings
-exact_name_matches <- inner_join(g36 |> 
-                                   select(g36_id, adm0_n, adm1_n, adm2_n), 
+full_name_matches <- inner_join(g36 |> 
+                                   select(g36_id, iso3c, adm1_n, adm2_n), 
                                  g410 |> 
-                                   select(g410_id, adm0_n, adm1_n, adm2_n), 
-                                 by = c("adm0_n", "adm1_n", "adm2_n"),
-                                 relationship = "many-to-many")
+                                   select(g410_id, iso3c, adm1_n, adm2_n), 
+                                 by = c("iso3c", "adm1_n", "adm2_n"),
+                                 relationship = "many-to-many") |> 
+  transmute(
+    g36_id, g410_id,
+    match_type = "full_name")
 
-g36 <- filter(g36, !g36_id %in% exact_name_matches$g36_id)
-g410 <- filter(g410, !g410_id %in% exact_name_matches$g410_id)
+g36 <- filter(g36, !g36_id %in% full_name_matches$g36_id)
+g410 <- filter(g410, !g410_id %in% full_name_matches$g410_id)
 ```
+
+### Fuzzy name matching
 
 ```{r exact_fuzzy}
 
@@ -223,9 +276,9 @@ thresholds <- c(0.1, 0.15, 0.2)
 
 fuzzy_matches_list <- lapply(thresholds, function(thresh){
   stringdist_inner_join(
-    g36 |> select(g36_id, iso3, adm1_n, adm2_n),
-    g410 |> select(g410_id, iso3, adm1_n, adm2_n),
-    by = c("iso3", "adm1_n", "adm2_n"),
+    g36 |> select(g36_id, iso3c, adm1_n, adm2_n),
+    g410 |> select(g410_id, iso3c, adm1_n, adm2_n),
+    by = c("iso3c", "adm1_n", "adm2_n"),
     method = "jw",
     max_dist = thresh,
     distance_col = "dist"
@@ -233,10 +286,10 @@ fuzzy_matches_list <- lapply(thresholds, function(thresh){
     transmute(
       g36_id,
       g410_id,
-      iso3.x, adm1_n.x, adm2_n.x,
-      iso3.y, adm1_n.y, adm2_n.y,
+      iso3c.x, adm1_n.x, adm2_n.x,
+      iso3c.y, adm1_n.y, adm2_n.y,
       match_type = paste0("fuzzy_name_", thresh),
-      iso3.dist, adm1_n.dist, adm2_n.dist
+      iso3c.dist, adm1_n.dist, adm2_n.dist
     )
 })
 
@@ -254,65 +307,218 @@ save(fuzzy_matches_list, fuzzy_matches, file = "C:/Users/pauvernu/Seafile/librar
 # load("C:/Users/pauvernu/Seafile/library/chap_two_data/gadm/fuzzy_matches.RData")
 
 # exact fuzzy: matches w/out duplicate
-exact_fuzzy <- filter(fuzzy_matches, many_to_many==FALSE)
+exact_fuzzy_match <- filter(fuzzy_matches, many_to_many==FALSE) |> 
+  transmute(
+    g36_id, g410_id,
+    match_type)
 
-g36 <- filter(g36, !g36_id %in% exact_fuzzy$g36_id)
-g410 <- filter(g410, !g410_id %in% exact_fuzzy$g410_id)
+g36 <- filter(g36, !g36_id %in% exact_fuzzy_match$g36_id)
+g410 <- filter(g410, !g410_id %in% exact_fuzzy_match$g410_id)
 ```
 
 ```{r}
 
 # fuzzy matches w/ duplicates, but exact matching at adm2 level
-adm2_exact_fuzzy <- filter(fuzzy_matches, many_to_many==TRUE, adm2_n.dist==0)
+adm2_fuzzy_match <- filter(fuzzy_matches, many_to_many==TRUE, adm2_n.dist==0) |> 
+  transmute(
+    g36_id, g410_id,
+    match_type)
 
-g36 <- filter(g36, !g36_id %in% adm2_exact_fuzzy$g36_id)
-g410 <- filter(g410, !g410_id %in% adm2_exact_fuzzy$g410_id)
+g36 <- filter(g36, !g36_id %in% adm2_fuzzy_match$g36_id)
+g410 <- filter(g410, !g410_id %in% adm2_fuzzy_match$g410_id)
 ```
 
 ```{r}
 
-# filter(fuzzy_matches,
-#        !g36_id %in% c(exact_fuzzy$g36_id, adm2_exact_fuzzy$g36_id),
-#        !g410_id %in% c(exact_fuzzy$g410_id, adm2_exact_fuzzy$g410_id)) |>
-#   filter(match_type=="fuzzy_name_0.1", iso3.dist==0, adm1_n.dist==0)
+g36 |> group_by(iso3c, adm0) |> tally() |> arrange(desc(n))
+g410 |> group_by(iso3c, adm0) |> tally() |> arrange(desc(n))
+```
 
-## split/merge admin units
-# one v3.6 name contained in several v4.10 names → split
-# several v3.6 names contained in one v4.10 → aggregation
+### Spatial matching
+
+```{r unmatched_sf}
+
+g36_sf <- left_join(g36,
+                    select(g36_start, g36_id, geometry),
+                    by = "g36_id") |> 
+  st_as_sf()
+
+g410_sf <- left_join(g410,
+                     select(g410_start, g410_id, geometry = geom),
+                     by = "g410_id") |> 
+  st_as_sf()
+  
+countries <- intersect(g36_sf$iso3c, g410_sf$iso3c)
+length(countries)
+```
+
+```{r compute_overlap_country}
+
+compute_overlap_country <- function(iso_code) {
+
+  message("Processing: ", iso_code)
+
+  g36_iso  <- g36_sf |> filter(iso3c == iso_code)
+  g410_iso <- g410_sf |> filter(iso3c == iso_code)
+
+  if (nrow(g36_iso) == 0 || nrow(g410_iso) == 0) return(NULL)
+
+  # Project to metric CRS
+  g36p  <- st_transform(g36_iso, 3857)
+  g410p <- st_transform(g410_iso, 3857)
+
+  # Candidate list (sparse)
+  cand_list <- st_intersects(g36p, g410p, sparse = TRUE)
+
+  # Fast helper for pairs
+  compute_pair <- function(i, j) {
+    a <- g36p[i, , drop = FALSE]
+    b <- g410p[j, , drop = FALSE]
+    inter <- tryCatch(st_intersection(a$geometry, b$geometry), error = function(e) NULL)
+
+    inter_area <- if (is.null(inter) || length(inter) == 0) 0 else {
+      x <- as.numeric(st_area(inter))
+      sum(x, na.rm = TRUE)
+    }
+
+    g36_area  <- as.numeric(st_area(a))
+    g410_area <- as.numeric(st_area(b))
+
+    tibble(
+      iso3c      = iso_code,
+      g36_id    = a$g36_id,
+      g410_id   = b$g410_id,
+      inter_area = inter_area,
+      g36_area  = g36_area,
+      g410_area = g410_area,
+      overlap_ratio_g36  = ifelse(g36_area > 0, inter_area / g36_area, 0),
+      overlap_ratio_g410 = ifelse(g410_area > 0, inter_area / g410_area, 0)
+    )
+  }
+
+  idx <- which(lengths(cand_list) > 0)
+
+  map_dfr(idx, function(i) {
+    js <- cand_list[[i]]
+    map_dfr(js, function(j) compute_pair(i, j))
+  })
+}
 ```
 
 ```{r}
 
-# some adm2 have the same adm0, adm1 names and same hasc2, but different adm2 name
-# inner_join(
-#   g36 |> 
-#     select(g36_id, adm0_n, adm1_n, adm2_n, hasc_2), 
-#   g410 |> 
-#     select(g410_id, adm0_n, adm1_n, adm2_n, hasc_2),
-#   by = c("adm0_n", "adm1_n", "hasc_2"),
-#   relationship = "many-to-many")
+# apply function over countries
+overlap_country_list <- future_lapply(countries, compute_overlap_country,
+                                      future.seed = TRUE)
+
+overlap_tbl <- bind_rows(overlap_country_list) |>
+  filter(inter_area > 0) |>
+  arrange(iso3c, g36_id, desc(overlap_ratio_g36))
+```
+
+```{r}
+
+# Mutual overlap
+common_overlap_match <- overlap_tbl |> 
+  filter(overlap_ratio_g36 >= .9 & overlap_ratio_g410 >= .9) |> 
+  transmute(
+    g36_id, g410_id,
+    match_type = "common overlap"    
+  )
+
+g36 <- filter(g36, !g36_id %in% common_overlap_match$g36_id)
+g410 <- filter(g410, !g410_id %in% common_overlap_match$g410_id)
+```
+
+```{r}
+
+# g410 area fully overlap by g36 area
+# best situation, 100% g36 value assigned to g410
+g410_overlap_match <- overlap_tbl |> 
+  filter(g36_id %in% g36$g36_id, g410_id %in% g410$g410_id) |> 
+  filter(overlap_ratio_g410 >= .9) |> 
+  transmute(
+    g36_id, g410_id,
+    match_type = "g410 overlap"
+  )
+
+g410_overlap_match |> get_dupes(g410_id)
+
+g36 <- filter(g36, !g36_id %in% g410_overlap_match$g36_id)
+g410 <- filter(g410, !g410_id %in% g410_overlap_match$g410_id)
+```
+
+```{r}
+
+# g36 area fully overlap by g410 area
+# more complicated: weighted average based on area
+# option: (i) sum total share of g410 area covered by g36 areas, (ii) if above threshold, e.g. .8, assign weighted average: sum(g36_area * overlap_ratio_g410)
+g36_overlap <- overlap_tbl |> 
+  filter(g36_id %in% g36$g36_id, g410_id %in% g410$g410_id) |> 
+  filter(overlap_ratio_g36 >= .9)
+
+g36_overlap |> get_dupes(g36_id)
+
+g36_overlap_match <- g36_overlap |> 
+  mutate(total_overlap_ratio = sum(overlap_ratio_g410, na.rm = T), 
+         .by = g410_id) |> 
+  # arrange(desc(total_overlap_ratio)) |> 
+  mutate(thres = ifelse(total_overlap_ratio > .8, 1, 0)) |> 
+  filter(thres > 0) |> 
+  # mutate(weight = overlap_ratio_g410) |> 
+  arrange(g410_id) |> 
+  transmute(
+    g36_id, g410_id, 
+    weight = overlap_ratio_g410,
+    match_type = "g36 overlap"
+  )
+
+g36 <- filter(g36, !g36_id %in% g36_overlap_match$g36_id)
+g410 <- filter(g410, !g410_id %in% g36_overlap_match$g410_id)
+```
+
+```{r}
+
+# Map example: Mexico
+id <- overlap_tbl |>
+  # filter(g36_id %in% g36$g36_id, g410_id %in% g410$g410_id) |> 
+  filter(iso3c=="GHA")
+
+sf36 <- filter(g36_sf, g36_id %in% id$g36_id)
+sf410 <- filter(g410_sf, g410_id %in% id$g410_id)
+
+ggplot() +
+  geom_sf(data = sf36, fill = "blue", alpha = 0.1) +
+  geom_sf(data = sf410, fill = "yellow", alpha = 0.1) +   
+  theme_minimal()
+```
+
+```{r}
+g36 |> 
+  group_by(iso3c, adm0) |> 
+  tally() |> 
+  ungroup() |> 
+  mutate(share = n / sum(n)) |> 
+  arrange(desc(n))
+
+g410 |> 
+  group_by(iso3c, adm0) |> 
+  tally() |> 
+  ungroup() |> 
+  mutate(share = n / sum(n)) |> 
+  arrange(desc(n))
 ```
 
 ```{r}
 
 # stack all matches
-exact_matches <- bind_rows(
+matches <- bind_rows(
   exact_hasc_matches,
-  exact_name_matches,
-  exact_fuzzy
+  full_name_matches,
+  exact_fuzzy_match,
+  adm2_fuzzy_match
 ) |> 
   arrange(match_type)  # exact_hasc > exact_name > fuzzy
-
-```
-
-```{r}
-
-## spatial matching, with % threshold (ex: 95%)?
-# ensure same CRS
-g36 <- st_transform(g36, 4326)
-g410 <- st_transform(g410, 4326)
-# check
-st_crs(g36); st_crs(g410)
 ```
 
 # PVCCI
